@@ -110,8 +110,42 @@ jobs:
           name: ${{ matrix.target }}
           path: ${{ env.ASSET }}
 
+  sbom:
+    needs: validate
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          syft-version: v1.51.1
+
+      - name: Generate SBOM
+        run: |
+          out="sofka-${RELEASE_TAG}.spdx.json"
+
+          syft scan dir:. \
+            --source-name sofka \
+            --source-version "${RELEASE_TAG#v}" \
+            -o spdx-json="$out"
+
+          echo "SBOM=$out" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: ${{ env.SBOM }}
+
   upload-assets:
-    needs: build
+    needs: [build, sbom]
     runs-on: ubuntu-latest
     permissions:
       contents: write # gh release upload
@@ -128,10 +162,15 @@ jobs:
 
       - name: Generate checksums
         working-directory: dist
-        run: shasum -a 256 -- *.tar.gz > SHA256SUMS
+        run: shasum -a 256 -- *.tar.gz *.spdx.json > SHA256SUMS
 
       - name: Upload release assets
-        run: gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            dist/*.tar.gz \
+            dist/*.spdx.json \
+            dist/SHA256SUMS \
+            --clobber
 
   # Kick the tap's bump workflow so `brew install nklmilojevic/sofka/sofka`
   # picks up the new version immediately instead of waiting for the tap's
